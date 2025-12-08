@@ -23,9 +23,19 @@ interface Location {
   available_capacity: number
 }
 
+// Define a simpler Alert interface for frontend generation
+interface GeneratedAlert {
+  id: string
+  location_id: number
+  location_name: string
+  message: string
+  alert_type: "critical" | "warning"
+  timestamp: string
+}
+
 export default function Dashboard({ onLogout }: DashboardProps) {
   const [locations, setLocations] = useState<Location[]>([])
-  const [alerts, setAlerts] = useState<any[]>([])
+  const [alerts, setAlerts] = useState<GeneratedAlert[]>([])
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
   const [totalCrowd, setTotalCrowd] = useState(0)
@@ -39,42 +49,49 @@ export default function Dashboard({ onLogout }: DashboardProps) {
   const fetchData = useCallback(async () => {
     try {
       setError(null)
-      const [statusRes, alertsRes] = await Promise.all([fetch(`${apiUrl}/status`), fetch(`${apiUrl}/alerts`)])
+      const statusRes = await fetch(`${apiUrl}/status`)
 
       if (!statusRes.ok) {
         throw new Error(`API error: ${statusRes.status}`)
       }
 
       const statusData = await statusRes.json()
-      let currentLocs: Location[] = []
-
+      
       if (statusData.locations && Array.isArray(statusData.locations)) {
-        currentLocs = statusData.locations
-        setLocations(currentLocs)
-        const total = statusData.locations.reduce((sum: number, loc: Location) => sum + loc.current_count, 0)
+        // Sort locations by ID to prevent cards from jumping positions
+        const sortedLocs = statusData.locations.sort((a: Location, b: Location) => a.id - b.id)
+        
+        setLocations(sortedLocs)
+        
+        // Calculate totals
+        const total = sortedLocs.reduce((sum: number, loc: Location) => sum + loc.current_count, 0)
         setTotalCrowd(total)
-      }
 
-      if (alertsRes.ok) {
-        const alertsData = await alertsRes.json()
-        if (alertsData.alerts) {
-          const problematicLocationIds = currentLocs
-            .filter(loc => loc.status === "CRITICAL" || loc.status === "WARNING")
-            .map(loc => loc.id)
-
-          const rawAlerts = alertsData.alerts.filter((a: any) => problematicLocationIds.includes(a.location_id))
-          
-          const seenLocs = new Set()
-          const activeAlerts: any[] = []
-          for (const alert of rawAlerts) {
-            if (!seenLocs.has(alert.location_id)) {
-                seenLocs.add(alert.location_id)
-                activeAlerts.push(alert)
+        // Generate Alerts purely based on Current Status
+        const currentAlerts: GeneratedAlert[] = []
+        
+        sortedLocs.forEach((loc: Location) => {
+            if (loc.status === "CRITICAL") {
+                currentAlerts.push({
+                    id: `crit-${loc.id}-${Date.now()}`,
+                    location_id: loc.id,
+                    location_name: loc.name,
+                    alert_type: "critical",
+                    message: `${loc.name} is overloaded (${loc.current_count}/${loc.capacity}). Entry closed.`,
+                    timestamp: new Date().toISOString()
+                })
+            } else if (loc.status === "WARNING") {
+                currentAlerts.push({
+                    id: `warn-${loc.id}-${Date.now()}`,
+                    location_id: loc.id,
+                    location_name: loc.name,
+                    alert_type: "warning",
+                    message: `${loc.name} is approaching capacity (${loc.load_percentage.toFixed(0)}%).`,
+                    timestamp: new Date().toISOString()
+                })
             }
-          }
-
-          setAlerts(activeAlerts)
-        }
+        })
+        setAlerts(currentAlerts)
       }
 
       setLastUpdate(new Date())
@@ -137,29 +154,47 @@ export default function Dashboard({ onLogout }: DashboardProps) {
     }
   }
 
-  const handleLocationUpdate = (locationId: number, newCount: number) => {
+  // FIX: Renamed to handleManualAction and added ACTUAL API CALL
+  const handleManualAction = async (locationId: number, action: "enter" | "exit") => {
+    // 1. Optimistic Update (Make UI feel fast)
     setLocations((prevLocations) =>
       prevLocations.map((loc) => {
         if (loc.id === locationId) {
+          const change = action === "enter" ? 1 : -1
+          // Clamp count locally so it looks right immediately
+          const newCount = Math.max(0, Math.min(loc.current_count + change, loc.capacity + 1))
+          
           const loadPercentage = (newCount / loc.capacity) * 100
           return {
             ...loc,
             current_count: newCount,
             load_percentage: loadPercentage,
-            available_capacity: loc.capacity - newCount,
-            status: loadPercentage >= 100 ? "CRITICAL" : loadPercentage >= 80 ? "WARNING" : "NORMAL",
-            entry_closed: loadPercentage >= 100 ? 1 : 0,
+            available_capacity: Math.max(0, loc.capacity - newCount),
+            status: loadPercentage > 100 ? "CRITICAL" : loadPercentage >= 80 ? "WARNING" : "NORMAL",
+            entry_closed: loadPercentage > 100 ? 1 : 0,
           }
         }
         return loc
-      }),
+      }).sort((a, b) => a.id - b.id)
     )
-    setTotalCrowd((prev) => {
-        const oldCount = locations.find((l) => l.id === locationId)?.current_count || 0
-        return prev - oldCount + newCount
-    })
     
-    setTimeout(fetchData, 500)
+    // 2. Send command to Backend (The missing part!)
+    try {
+        const response = await fetch(`${apiUrl}/${action}?location_id=${locationId}`, {
+            method: "POST"
+        })
+        
+        if (!response.ok) {
+            console.error("Failed to update backend")
+        }
+        
+        // 3. Re-fetch to ensure sync with server logic
+        await fetchData()
+        
+    } catch (error) {
+        console.error("API Error:", error)
+        // If error, reverting would happen automatically on next poll
+    }
   }
 
   const handleRefreshClick = async () => {
@@ -172,16 +207,14 @@ export default function Dashboard({ onLogout }: DashboardProps) {
     setIsRefreshing(false)
   }
 
-  const criticalAlerts = alerts.filter((a: any) => a.alert_type === "critical").length
-  const warningAlerts = alerts.filter((a: any) => a.alert_type === "warning").length
+  const criticalAlerts = alerts.filter((a) => a.alert_type === "critical").length
+  const warningAlerts = alerts.filter((a) => a.alert_type === "warning").length
 
   return (
-    // FIX 1: bg-gradient-to-br -> bg-linear-to-br
     <div className="flex flex-col min-h-screen bg-linear-to-br from-slate-900 via-slate-800 to-slate-900">
       <header className="sticky top-0 z-50 border-b border-slate-700 bg-slate-900/80 backdrop-blur-md shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            {/* HEADER LOGO */}
             <div className="relative h-12 w-12 rounded-lg overflow-hidden shadow-lg shadow-blue-500/20">
               <img src="/logo.jpg" alt="Logo" className="object-cover w-full h-full" />
             </div>
@@ -235,7 +268,6 @@ export default function Dashboard({ onLogout }: DashboardProps) {
         </div>
       </header>
 
-      {/* FIX 2: flex-grow -> grow */}
       <main className="grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
         {/* Key Metrics */}
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-8">
@@ -283,7 +315,6 @@ export default function Dashboard({ onLogout }: DashboardProps) {
             </h2>
             
             <div className="flex items-center gap-3">
-                {/* View Switcher Buttons */}
                 <div className="bg-slate-800 p-1 rounded-lg border border-slate-700 flex gap-1">
                     <button 
                         onClick={() => setViewMode("grid")}
@@ -317,8 +348,9 @@ export default function Dashboard({ onLogout }: DashboardProps) {
             {viewMode === "grid" ? (
                 locations.length > 0 ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    {/* FIX: Passed handleManualAction instead of the old function */}
                     {locations.map((location) => (
-                        <LocationCard key={location.id} location={location} onUpdate={handleLocationUpdate} />
+                        <LocationCard key={location.id} location={location} onUpdate={handleManualAction} />
                     ))}
                     </div>
                 ) : (
@@ -348,7 +380,6 @@ export default function Dashboard({ onLogout }: DashboardProps) {
           <CapacityRecommendations locations={locations} />
         </div>
 
-        {/* Last Update */}
         <div className="flex justify-end items-center gap-4 mt-2 mb-4">
           <p className="text-xs text-slate-500 font-mono">
             System Synced: {lastUpdate?.toLocaleTimeString('en-PK', { timeZone: 'Asia/Karachi' }) || "Pending..."}
@@ -362,11 +393,9 @@ export default function Dashboard({ onLogout }: DashboardProps) {
         </div>
       </main>
 
-      {/* FOOTER */}
       <footer className="border-t border-slate-800 bg-slate-900/50 backdrop-blur-sm py-8 mt-auto">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-2">
-                {/* FOOTER LOGO */}
                 <div className="h-8 w-8 rounded-lg overflow-hidden shadow-lg shadow-blue-900/20">
                     <img src="/logo.jpg" alt="Logo" className="object-cover w-full h-full" />
                 </div>

@@ -2,7 +2,7 @@ import random
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta  # <--- FIXED: Added datetime here
+from datetime import datetime, timedelta
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import os
 from database import get_db, engine, Base
@@ -69,7 +69,15 @@ def enter_location(location_id: int, db: Session = Depends(get_db)):
     if not location:
         raise HTTPException(status_code=404, detail="Location not found")
     
-    # Check if entry is closed
+    # HARD LIMIT CHECK: Do not allow entry if already at Capacity + 1
+    if location.current_count >= location.capacity + 1:
+         return {
+            "success": False, 
+            "message": f"Physical limit reached for {location.name}. Cannot add more people.",
+            "is_reroute": False
+        }
+
+    # Check if entry is closed (Soft Limit)
     if location.entry_closed:
         return {
             "success": False, 
@@ -207,8 +215,12 @@ def simulate_crowd(db: Session = Depends(get_db)):
     changes = []
 
     for loc in locations:
+        # If entry is closed (Over capacity), force reduction or stay same
         if loc.entry_closed == 1:
             change = random.randint(-3, 0)
+        # If full (Capacity reached), prevent adding more than 1 over limit
+        elif loc.current_count >= loc.capacity:
+             change = random.randint(-2, 1) # Can only go +1 max
         else:
             change = random.randint(-3, 5)
         
@@ -216,10 +228,14 @@ def simulate_crowd(db: Session = Depends(get_db)):
             continue
             
         new_count = loc.current_count + change
-        loc.current_count = max(0, new_count)
+        
+        # HARD LIMIT: Clamp between 0 and Capacity + 1
+        loc.current_count = max(0, min(new_count, loc.capacity + 1))
 
+        # Determine status
         loc.status = AutoDecisionEngine.determine_status(loc.current_count, loc.capacity)
         
+        # Handle entry closure logic
         if loc.current_count > loc.capacity:
             if loc.entry_closed == 0:
                 loc.entry_closed = 1
@@ -239,27 +255,21 @@ def simulate_crowd(db: Session = Depends(get_db)):
 @app.get("/forecast/{location_id}")
 def get_forecast(location_id: int, db: Session = Depends(get_db)):
     """
-    Returns predicted crowd levels for the next 4 hours
-    based on 'historical' patterns (simulated for demo).
+    Returns predicted crowd levels for the next 4 hours.
     """
     location = db.query(Location).filter(Location.id == location_id).first()
     if not location:
         raise HTTPException(status_code=404, detail="Location not found")
     
-    # FIX: Shift base time to Pakistan Standard Time (UTC+5)
-    # This ensures the graph starts at your CURRENT time (e.g., 5 PM)
     pkt_now = datetime.utcnow() + timedelta(hours=5)
     current_hour_pkt = pkt_now.hour
     
     forecast = []
     
-    # Simulate a pattern: Peak hours are 11-14 (lunch) and 17-19 (evening)
-    for i in range(5): # Next 4 hours
+    for i in range(5): 
         hour = (current_hour_pkt + i) % 24
-        # Calculate the future time label
         next_time = pkt_now + timedelta(hours=i)
         
-        # Logic for crowd simulation
         if 11 <= hour <= 14:
             base_load = 0.8
         elif 17 <= hour <= 19:
@@ -273,7 +283,6 @@ def get_forecast(location_id: int, db: Session = Depends(get_db)):
         predicted_count = int(location.capacity * predicted_load)
         
         forecast.append({
-            # Format time as "5:00 PM", "6:00 PM" etc.
             "time": next_time.strftime("%I:%M %p"),
             "predicted_count": predicted_count,
             "capacity": location.capacity,

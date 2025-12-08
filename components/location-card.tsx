@@ -1,175 +1,133 @@
 "use client"
 
-import { Lock, AlertCircle, Plus, Minus, LogIn, LogOut } from "lucide-react"
-import { useState } from "react"
+import { Plus, Minus, Lock, Unlock } from "lucide-react"
+
+interface Location {
+  id: number
+  name: string
+  capacity: number
+  current_count: number
+  status: string
+  entry_closed: number
+  load_percentage: number
+  available_capacity: number
+}
 
 interface LocationCardProps {
-  location: {
-    id: number
-    name: string
-    capacity: number
-    current_count: number
-    status: string
-    entry_closed: number
-    load_percentage: number
-    available_capacity: number
-  }
-  onUpdate?: (locationId: number, newCount: number) => void
+  location: Location
+  // FIX: Updated Type Signature
+  onUpdate: (id: number, action: "enter" | "exit") => void
 }
 
 export default function LocationCard({ location, onUpdate }: LocationCardProps) {
-  const [isUpdating, setIsUpdating] = useState(false)
-  const [hoverEnter, setHoverEnter] = useState(false)
-  const [hoverExit, setHoverExit] = useState(false)
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
-
-  const getStatusColor = () => {
-    if (location.entry_closed) return "status-closed"
-    if (location.status === "CRITICAL") return "status-critical"
-    if (location.status === "WARNING") return "status-warning"
-    return "status-normal"
-  }
-
-  const getProgressColor = () => {
-    if (location.entry_closed) return "bg-gray-500"
-    if (location.status === "CRITICAL") return "bg-red-500"
-    if (location.status === "WARNING") return "bg-yellow-500"
-    return "bg-green-500"
-  }
-
-  const handleEntry = async () => {
-    setIsUpdating(true)
-    try {
-      console.log("[v0] Entry button clicked for location:", location.id)
-      const response = await fetch(`${apiUrl}/enter?location_id=${location.id}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-      })
-
-      console.log("[v0] Entry response status:", response.status)
-      const data = await response.json()
-      console.log("[v0] Entry response data:", data)
-
-      if (response.ok && data.success && onUpdate) {
-        console.log("[v0] Entry successful, new count:", data.current_count)
-        onUpdate(location.id, data.current_count)
-      } else if (!data.success && data.is_reroute) {
-        console.log("[v0] Entry closed, reroute suggestion:", data.reroute_location)
-        alert(`Entry closed! Suggested location: ${data.reroute_location}`)
+  
+  // Logic to determine the text and color
+  const getStatusDisplay = () => {
+    if (location.status === "CRITICAL" || location.entry_closed === 1) {
+      return {
+        text: "Status: Entry automatically closed due to overcrowding",
+        color: "text-red-400",
+        bgColor: "bg-red-500/10 border-red-500/30"
       }
-    } catch (err) {
-      console.error("[v0] Entry error:", err)
-      alert("Error recording entry. Please try again.")
-    } finally {
-      setIsUpdating(false)
+    } else if (location.status === "WARNING") {
+      return {
+        text: "Status: On Warning",
+        color: "text-yellow-400",
+        bgColor: "bg-yellow-500/10 border-yellow-500/30"
+      }
+    } else {
+      return {
+        text: "Status: Normal",
+        color: "text-green-400",
+        bgColor: "bg-slate-700/30 border-slate-600/30"
+      }
     }
   }
 
-  const handleExit = async () => {
-    setIsUpdating(true)
-    try {
-      console.log("[v0] Exit button clicked for location:", location.id)
-      const response = await fetch(`${apiUrl}/exit?location_id=${location.id}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-      })
+  const statusDisplay = getStatusDisplay()
 
-      console.log("[v0] Exit response status:", response.status)
-      const data = await response.json()
-      console.log("[v0] Exit response data:", data)
-
-      if (response.ok && data.success && onUpdate) {
-        console.log("[v0] Exit successful, new count:", data.current_count)
-        onUpdate(location.id, data.current_count)
-      }
-    } catch (err) {
-      console.error("[v0] Exit error:", err)
-      alert("Error recording exit. Please try again.")
-    } finally {
-      setIsUpdating(false)
-    }
+  const getProgressColor = (percentage: number) => {
+    if (percentage >= 100) return "bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]"
+    if (percentage >= 80) return "bg-yellow-500 shadow-[0_0_10px_rgba(234,179,8,0.5)]"
+    return "bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]"
   }
+
+  // Calculate if we have hit the hard limit (Capacity + 1)
+  const isFull = location.current_count >= location.capacity + 1;
 
   return (
-    <div className="bg-slate-800 border border-slate-700 rounded-xl p-6 hover:border-slate-600 transition">
+    <div className="bg-slate-800 border border-slate-700 rounded-xl p-5 flex flex-col h-full shadow-lg transition-all duration-300 hover:border-slate-600">
       {/* Header */}
-      <div className="flex items-start justify-between mb-4">
+      <div className="flex justify-between items-start mb-4">
         <div>
-          <h3 className="text-lg font-semibold text-white">{location.name}</h3>
-          <p className="text-xs text-slate-400 mt-1">Capacity: {location.capacity}</p>
+          <h3 className="text-lg font-bold text-white tracking-tight">{location.name}</h3>
+          <p className="text-xs text-slate-400">Capacity: {location.capacity}</p>
         </div>
-        {location.entry_closed && <Lock className="w-5 h-5 text-red-400" />}
+        <div className={`p-1.5 rounded-lg ${location.entry_closed ? 'bg-red-500/20 text-red-400' : 'bg-green-500/20 text-green-400'}`}>
+            {location.entry_closed ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
+        </div>
       </div>
 
-      {/* Current Count */}
-      <div className="flex items-baseline gap-2 mb-4">
-        <span className="text-3xl font-bold text-white">{location.current_count}</span>
-        <span className="text-slate-400 text-sm">/ {location.capacity}</span>
+      {/* Main Count */}
+      <div className="mb-4">
+        <div className="flex items-baseline gap-1">
+          <span className={`text-4xl font-bold ${
+            location.status === "CRITICAL" ? "text-red-500" : 
+            location.status === "WARNING" ? "text-yellow-400" : "text-white"
+          }`}>
+            {location.current_count}
+          </span>
+          <span className="text-slate-500 font-medium">/ {location.capacity}</span>
+        </div>
       </div>
 
       {/* Progress Bar */}
-      <div className="mb-4">
-        <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
-          <div
-            className={`h-full transition-all ${getProgressColor()}`}
-            style={{ width: `${Math.min(location.load_percentage, 100)}%` }}
-          ></div>
-        </div>
+      <div className="w-full bg-slate-700/50 rounded-full h-2.5 mb-4 overflow-hidden border border-slate-700">
+        <div
+          className={`h-2.5 rounded-full transition-all duration-500 ease-out ${getProgressColor(location.load_percentage)}`}
+          style={{ width: `${Math.min(location.load_percentage, 100)}%` }}
+        ></div>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 gap-4 mb-4 text-sm">
+      {/* Stats Grid */}
+      <div className="grid grid-cols-2 gap-4 mb-4">
         <div>
-          <p className="text-slate-400">Load</p>
-          <p className="text-white font-semibold">{location.load_percentage.toFixed(1)}%</p>
+          <p className="text-xs text-slate-500 font-medium uppercase">Load</p>
+          <p className={`text-sm font-bold ${
+             location.load_percentage >= 80 ? "text-white" : "text-slate-200"
+          }`}>
+            {location.load_percentage.toFixed(1)}%
+          </p>
         </div>
         <div>
-          <p className="text-slate-400">Available</p>
-          <p className="text-white font-semibold">{location.available_capacity}</p>
+          <p className="text-xs text-slate-500 font-medium uppercase">Available</p>
+          <p className="text-sm font-bold text-white">{location.available_capacity}</p>
         </div>
       </div>
 
-      {/* Status Badge */}
-      <div className="flex items-center justify-between mb-4">
-        <span className={`status-badge ${getStatusColor()}`}>
-          {location.entry_closed ? "ENTRY CLOSED" : location.status}
-        </span>
-        {location.status === "CRITICAL" && <AlertCircle className="w-4 h-4 text-red-400" />}
+      {/* Descriptive Status Message */}
+      <div className={`mt-auto mb-4 p-2 rounded-lg border text-xs font-medium text-center ${statusDisplay.bgColor} ${statusDisplay.color}`}>
+        {statusDisplay.text}
       </div>
 
-      {/* Entry Closed Warning */}
-      {location.entry_closed && (
-        <div className="mt-3 p-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-400">
-          Entry automatically closed due to overcrowding
-        </div>
-      )}
-
-      <div className="flex gap-2 mt-4 pt-4 border-t border-slate-700">
+      {/* Action Buttons */}
+      <div className="grid grid-cols-2 gap-3 mt-2">
         <button
-          onClick={handleEntry}
-          disabled={isUpdating || location.entry_closed}
-          onMouseEnter={() => setHoverEnter(true)}
-          onMouseLeave={() => setHoverEnter(false)}
-          className="flex-1 flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 disabled:bg-green-600/50 disabled:cursor-not-allowed text-white text-xs font-medium py-2 rounded transition-all duration-200"
-          title="Random people enter"
+          // FIX: Pass "enter" string instead of calculation
+          onClick={() => onUpdate(location.id, "enter")}
+          // DISABLED Logic: If entry is closed OR we hit capacity+1
+          disabled={location.entry_closed === 1 || isFull}
+          className="flex items-center justify-center gap-2 py-2 px-4 bg-green-600 hover:bg-green-700 disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed text-white rounded-lg transition-colors font-medium text-sm shadow-lg shadow-green-900/20"
         >
-          {hoverEnter ? <LogIn className="w-4 h-4" /> : <Plus className="w-3 h-3" />}
-          {isUpdating ? "..." : "Enter"}
+          <Plus className="w-4 h-4" /> Enter
         </button>
         <button
-          onClick={handleExit}
-          disabled={isUpdating || location.current_count === 0}
-          onMouseEnter={() => setHoverExit(true)}
-          onMouseLeave={() => setHoverExit(false)}
-          className="flex-1 flex items-center justify-center gap-2 bg-orange-600 hover:bg-orange-700 disabled:bg-orange-600/50 disabled:cursor-not-allowed text-white text-xs font-medium py-2 rounded transition-all duration-200"
-          title="Random people exit"
+          // FIX: Pass "exit" string instead of calculation
+          onClick={() => onUpdate(location.id, "exit")}
+          disabled={location.current_count === 0}
+          className="flex items-center justify-center gap-2 py-2 px-4 bg-orange-600 hover:bg-orange-700 disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed text-white rounded-lg transition-colors font-medium text-sm shadow-lg shadow-orange-900/20"
         >
-          {hoverExit ? <LogOut className="w-4 h-4" /> : <Minus className="w-3 h-3" />}
-          {isUpdating ? "..." : "Exit"}
+          <Minus className="w-4 h-4" /> Exit
         </button>
       </div>
     </div>
